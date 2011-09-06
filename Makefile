@@ -632,6 +632,7 @@ SRCS_MPLAYER-$(XVMC)          += libvo/vo_xvmc.c
 SRCS_MPLAYER-$(XVR100)        += libvo/vo_xvr100.c
 SRCS_MPLAYER-$(YUV4MPEG)      += libvo/vo_yuv4mpeg.c
 SRCS_MPLAYER-$(ZR)            += libvo/jpeg_enc.c libvo/vo_zr.c libvo/vo_zr2.c
+SRCS_MPLAYER-$(TEGRA)         += libvo/vo_tegra.c
 
 SRCS_MPLAYER = command.c \
                m_property.c \

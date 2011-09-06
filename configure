@@ -800,6 +800,7 @@ _xvr100=auto
 _tga=yes
 _directfb=auto
 _zr=auto
+tegra=no
 _bl=no
 #language=en
 _shm=auto
@@ -1293,6 +1294,8 @@ for ac_option do
   --disable-directfb)   _directfb=no    ;;
   --enable-zr)          _zr=yes         ;;
   --disable-zr)         _zr=no          ;;
+  --enable-tegra)       tegra=yes       ;;
+  --disable-tegra)      tegra=no        ;;
   --enable-bl)          _bl=yes         ;;
   --disable-bl)         _bl=no          ;;
   --enable-mtrr)        _mtrr=yes       ;;
@@ -7106,6 +7109,15 @@ else
 fi
 echores "$_zr"
 
+echocheck "tegra"
+if test "$tegra" = yes; then
+    def_tegra='#define CONFIG_TEGRA'
+    vomodules="tegra $vomodules"
+else
+    def_tegra='#undef CONFIG_TEGRA'
+    novomodules="tegra"
+fi
+echores "$tegra"
 
 echocheck "libmp3lame"
 def_mp3lame='#undef CONFIG_MP3LAME'
@@ -8505,6 +8517,7 @@ $def_xvmc
 $def_xvr100
 $def_yuv4mpeg
 $def_zr
+$def_tegra
 
 
 /* FFmpeg */
