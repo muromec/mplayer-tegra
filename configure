@@ -8049,6 +8049,7 @@ XVMC = $_xvmc
 XVR100 = $_xvr100
 YUV4MPEG = $_yuv4mpeg
 ZR = $_zr
+TEGRA = $tegra
 
 # FFmpeg
 FFMPEG     = $ffmpeg
