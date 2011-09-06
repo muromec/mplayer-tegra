@@ -177,9 +177,11 @@ static int draw_slice(uint8_t * image[], int stride[], int w, int h,
 	memcpy_pic(dst, image[0], w, h, image_width,
 			stride[0]);
 
+        /*
         dst += image_width * image_height;
 	memcpy_pic(dst, image[1], w, h, image_width/2,
 			stride[1]);
+                        */
 
         /*
         x /= 2;
