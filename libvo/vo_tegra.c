@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <stropts.h>
 #include <sys/mman.h>
+#include <linux/fb.h>
 
 #include "config.h"
 #include "mp_msg.h"
@@ -22,9 +23,17 @@
 
 #include "libavutil/common.h"
 static void __flip(void);
+static int output = 0;
 
 static uint32_t image_width;
 static uint32_t image_height;
+
+static struct fb_var_screeninfo fb_vinfo;
+struct tegra_dc_ext_flip flip;
+
+static void flip_setup(int out_buff, int width, int heigth,
+        int d_width, int d_d_heigth);
+uint8_t* nv_mmap(int size, int* offset) ;
 
 
 static const vo_info_t info = {
@@ -36,10 +45,8 @@ static const vo_info_t info = {
 
 const LIBVO_EXTERN(tegra);
 
-static int hdmi;
-
-static int dc, nvmap, out_buff, out_addr;
-uint8_t *video_buf;
+static int fb, dc, nvmap, out_buff, out_addr, mem_handle;
+uint8_t *video_buf[3];
 
 static uint32_t image_width;
 static uint32_t image_height;
@@ -65,16 +72,34 @@ static int config(uint32_t width, uint32_t height, uint32_t d_width,
 		uint32_t format) {
 
         int ret;
+        char device[16];
 
         image_height = height;
 	image_width = width;
-        printf("width = %x\n", image_width);
 
-        dc = open("/dev/tegra_dc_1", O_RDWR);
+        snprintf(device, 16, "/dev/tegra_dc_%d", output);
+
+        dc = open(device, O_RDWR);
         if(dc < 0) {
             perror("cant open dc");
             exit(1);
         }
+
+        snprintf(device, 10, "/dev/fb%d", output);
+        fb = open(device, O_RDWR);
+        if(dc < 0) {
+            perror("cant open fb");
+            exit(1);
+        }
+
+        // get screen info
+        ret = ioctl(fb, FBIOGET_VSCREENINFO, &fb_vinfo);
+        if(ret < 0) {
+            perror("cant get fb info");
+            exit(1);
+        }
+        close(fb);
+
 
         nvmap = open("/dev/knvmap", O_RDWR);
         if(nvmap < 0) {
@@ -94,7 +119,10 @@ static int config(uint32_t width, uint32_t height, uint32_t d_width,
         }
 
         struct nvmap_create_handle map;
-        map.size = 0x967b0;
+
+        int size = width * height ;
+        map.size = (size + 4096) * 2;
+        printf("size all: %dx%d %x\n", width, height, map.size);
 
         ret = ioctl(nvmap, NVMAP_IOC_CREATE, &map);
         if (ret < 0) {
@@ -102,8 +130,10 @@ static int config(uint32_t width, uint32_t height, uint32_t d_width,
             exit(1);
         }
 
+        mem_handle = map.handle;
+
         struct nvmap_alloc_handle ah;
-        ah.handle = map.handle;
+        ah.handle = mem_handle;
         ah.heap_mask = 1;
         ah.flags = 1;
         ah.align = 0x100;
@@ -115,7 +145,7 @@ static int config(uint32_t width, uint32_t height, uint32_t d_width,
         }
 
         struct nvmap_pin_handle pin;
-        pin.handles = map.handle;
+        pin.handles = mem_handle;
         pin.count = 1;
 
         ret = ioctl(nvmap, NVMAP_IOC_PIN_MULT, &pin);
@@ -134,30 +164,53 @@ static int config(uint32_t width, uint32_t height, uint32_t d_width,
 
         out_buff = map.id;
         
-        printf("mmap: %x\n", video_buf);
+        int off=0, off_u, off_v;
+        video_buf[0] = nv_mmap(size, &off);
+        off_u = off;
 
-        video_buf = mmap(0, 0x64000, 3, 1, nvmap, 0);
-        if(video_buf == -1)
-            perror("mmap failed");
+        video_buf[1] = nv_mmap(size/2, &off);
+        off_v = off;
 
-        printf("mmap: %x\n", video_buf);
+        video_buf[2] = nv_mmap(size/2, &off);
 
-        struct nvmap_map_caller nv_mmap;
-        nv_mmap.handle = map.handle;
-        nv_mmap.offset = 0;
-        nv_mmap.length = 0x64000;
-        nv_mmap.flags = 0;
-        nv_mmap.addr = video_buf;
-
-        ret = ioctl(nvmap, NVMAP_IOC_MMAP, &nv_mmap);
-
-        if (ret < 0) {
-            perror("nvmap mmap fail");
-            exit(1);
-        }
-
+        flip_setup(out_buff, width, height, off_u, off_v);
 
 	return 0;
+}
+
+
+uint8_t* nv_mmap(int size, int* offset) {
+
+    int ret;
+    struct nvmap_map_caller nv_mmap;
+
+    if(size % 4096) {
+        size += 4096;
+        size /= 4096;
+        size *= 4096;
+    }
+    uint8_t *buf = mmap(0, size, 3, 1, nvmap, 0);
+    if(buf == -1)
+        perror("mmap failed");
+
+    printf("mmap: %x\n", buf);
+    nv_mmap.handle = mem_handle;
+    nv_mmap.offset = *offset;
+    nv_mmap.length = size;
+    nv_mmap.flags = 0;
+    nv_mmap.addr = buf;
+
+    ret = ioctl(nvmap, NVMAP_IOC_MMAP, &nv_mmap);
+
+    if (ret < 0) {
+        perror("nvmap mmap fail");
+        exit(1);
+    }
+
+    *offset += size;
+
+    return buf;
+
 }
 
 static void flip_page(void)
@@ -172,16 +225,19 @@ static int draw_slice(uint8_t * image[], int stride[], int w, int h,
 
         uint8_t *dst;
 
-        dst = video_buf;// + image_width * y + x;
+        dst = video_buf[0];// + image_width * y + x;
 
 	memcpy_pic(dst, image[0], w, h, image_width,
 			stride[0]);
 
-        /*
-        dst += image_width * image_height;
+        dst = video_buf[1];
 	memcpy_pic(dst, image[1], w, h, image_width/2,
 			stride[1]);
-                        */
+
+        dst = video_buf[2];
+	memcpy_pic(dst, image[2], w, h, image_width/2,
+			stride[2]);
+
 
         /*
         x /= 2;
@@ -251,27 +307,33 @@ static void uninit(void)
         perror("uninit failed");
 }
 
-static void __flip(void) {
-    int ret;
-    struct tegra_dc_ext_flip flip;
-    bzero(&flip, sizeof flip);
+static void flip_setup(int out_buff, int width, int height,
+        int off_u, int off_v) {
 
+    bzero(&flip, sizeof flip);
     flip.win[0].index = 1;
+
     flip.win[0].buff_id = out_buff;
-    flip.win[0].offset_u = 408064;
-    flip.win[0].offset_v = 512256;
-    flip.win[0].stride = 848;
-    flip.win[0].stride_uv = 432;
+
+    flip.win[0].offset_u = off_u;
+    flip.win[0].offset_v = off_v;
+    flip.win[0].stride = width;
+    flip.win[0].stride_uv = width/2;
     flip.win[0].pixformat = 18;
-    flip.win[0].w = 3473408;
-    flip.win[0].h = 1966080;
-    flip.win[0].out_w = 1400;
-    flip.win[0].out_h = 900;
+    flip.win[0].w = width * 4096;
+    flip.win[0].h = height * 4096;
+    flip.win[0].out_w = fb_vinfo.xres;
+    flip.win[0].out_h = fb_vinfo.yres;
     flip.win[0].z = 1;
 
     flip.win[1].index = -1;
     flip.win[2].index = -1;
 
+}
+
+static void __flip(void) {
+    int ret;
+    
     ret = ioctl(dc, TEGRA_DC_EXT_FLIP, &flip);
 
     if (ret < 0)
@@ -288,37 +350,17 @@ static void check_events(void)
 {
 }
 
-static int test_dst_str( void * arg ) {
-	strarg_t * strarg = (strarg_t *)arg;
-
-	if (
-			strargcmp( strarg, "hdmi" ) == 0 ||
-			strargcmp( strarg, "lcd" ) == 0 ||
-			strargcmp( strarg, "both" ) == 0
-	   ) {
-		return 1;
-	}
-
-	return 0;
-}
-
 static int preinit(const char *arg)
 {
-	strarg_t dst_str={0, NULL};
 	const opt_t subopts[]= {
-		{ "dst",        OPT_ARG_STR,    &dst_str,       test_dst_str },
-		{ NULL }
+                {"output",   OPT_ARG_INT,       &output,       int_non_neg},
+                { NULL }
 	};
 
 	if(subopt_parse(arg, subopts))
 		return -1;
 
-	if(dst_str.str && strcmp( dst_str.str, "hdmi" )==0)
-		hdmi=1;
-	else
-		hdmi=0;
-
-        printf("hdmi=%d\n", hdmi);
+        printf("tegra dev=%d\n", output);
 	return 0;
 }
 
